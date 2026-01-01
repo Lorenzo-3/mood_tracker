@@ -13,9 +13,16 @@ export function moodColor(mood) {
   return MOODS.find(m => m.value === mood)?.color ?? "#888888";
 }
 
+// src/moods.js
 export function withAlpha(hex, alpha01) {
-  const a = Math.round(Math.max(0, Math.min(1, alpha01)) * 255)
-    .toString(16)
-    .padStart(2, "0");
-  return `${hex}${a}`; // #RRGGBBAA
+  const a = Math.max(0, Math.min(1, alpha01));
+  const h = hex.replace("#", "").trim();
+  const full = h.length === 3 ? h.split("").map(c => c + c).join("") : h.slice(0, 6);
+
+  const r = parseInt(full.slice(0, 2), 16);
+  const g = parseInt(full.slice(2, 4), 16);
+  const b = parseInt(full.slice(4, 6), 16);
+
+  return `rgba(${r},${g},${b},${a})`;
 }
+

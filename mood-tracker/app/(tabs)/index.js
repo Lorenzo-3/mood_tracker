@@ -1,8 +1,8 @@
-// app/(tabs)/index.js
-import { useEffect, useMemo, useState } from "react";
-import { Pressable, Text, View } from "react-native";
+import { useFocusEffect } from "@react-navigation/native";
 import { router } from "expo-router";
 import { useSQLiteContext } from "expo-sqlite";
+import { useCallback, useMemo, useState } from "react";
+import { Pressable, Text, View } from "react-native";
 import { getEntry } from "../../scripts/db";
 import { moodColor, withAlpha } from "../../src/moods";
 
@@ -19,12 +19,18 @@ export default function Today() {
   const date = useMemo(() => todayISO(), []);
   const [mood, setMood] = useState(3);
 
-  useEffect(() => {
-    (async () => {
-      const e = await getEntry(db, date);
-      setMood(e?.mood ?? 3);
-    })();
-  }, [db, date]);
+  useFocusEffect(
+    useCallback(() => {
+      let alive = true;
+      (async () => {
+        const e = await getEntry(db, date);
+        if (alive) setMood(e?.mood ?? 3);
+      })();
+      return () => {
+        alive = false;
+      };
+    }, [db, date])
+  );
 
   return (
     <View style={{ flex: 1, padding: 16, backgroundColor: withAlpha(moodColor(mood), 0.10) }}>
@@ -33,12 +39,7 @@ export default function Today() {
 
       <Pressable
         onPress={() => router.push(`/day/${date}`)}
-        style={{
-          backgroundColor: moodColor(mood),
-          padding: 14,
-          borderRadius: 14,
-          alignSelf: "flex-start",
-        }}
+        style={{ backgroundColor: moodColor(mood), padding: 14, borderRadius: 14, alignSelf: "flex-start" }}
       >
         <Text style={{ fontWeight: "800" }}>Edit today</Text>
       </Pressable>

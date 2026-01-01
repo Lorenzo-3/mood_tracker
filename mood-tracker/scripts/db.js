@@ -1,5 +1,4 @@
 // scripts/db.js
-import * as SQLite from "expo-sqlite";
 
 /**
  * Called by <SQLiteProvider onInit={...} />
@@ -13,6 +12,48 @@ export async function migrateDbIfNeeded(db) {
   const vRow = await db.getFirstAsync("PRAGMA user_version;");
   const version = vRow?.user_version ?? vRow?.["user_version"] ?? 0;
   if (version >= 1) return;
+
+  // scripts/db.js (add inside migrateDbIfNeeded)
+if (version < 2) {
+  await db.execAsync(`
+    CREATE TABLE IF NOT EXISTS tag_defs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+      color TEXT NOT NULL,
+      created_at INTEGER NOT NULL
+    );
+  `);
+
+  // Optional: seed tag_defs from existing entries.tags_json (if you have old typed tags)
+  const rows = await db.getAllAsync(`SELECT tags_json FROM entries;`);
+  const palette = ["#D64545","#E07A3F","#D9B44A","#4BAA6A","#2F8F83","#4A6FE3","#B04AE3"];
+
+  const pickColor = (name) => {
+    let h = 0;
+    for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) >>> 0;
+    return palette[h % palette.length];
+  };
+
+  for (const r of rows) {
+    let arr = [];
+    try { arr = JSON.parse(r.tags_json ?? "[]"); } catch {}
+    if (!Array.isArray(arr)) continue;
+    for (const t of arr) {
+      if (typeof t !== "string") continue;
+      const name = t.trim();
+      if (!name) continue;
+      await db.runAsync(
+        `INSERT OR IGNORE INTO tag_defs (name, color, created_at) VALUES (?, ?, ?);`,
+        name,
+        pickColor(name),
+        Date.now()
+      );
+    }
+  }
+
+  await db.execAsync("PRAGMA user_version = 2;");
+}
+
 
   await db.execAsync(`
     CREATE TABLE IF NOT EXISTS entries (
@@ -129,5 +170,39 @@ function safeJsonParse(text, fallback) {
     return JSON.parse(text);
   } catch {
     return fallback;
+  }
+}
+
+export async function getAllTagDefs(db) {
+  return await db.getAllAsync(
+    `SELECT id, name, color FROM tag_defs ORDER BY name COLLATE NOCASE;`
+  );
+}
+
+export async function addTagDef(db, { name, color }) {
+  const n = (name ?? "").trim();
+  if (!n) throw new Error("Tag name is empty");
+  await db.runAsync(
+    `INSERT INTO tag_defs (name, color, created_at) VALUES (?, ?, ?);`,
+    n,
+    color,
+    Date.now()
+  );
+}
+
+export async function deleteTagDef(db, name) {
+  const n = (name ?? "").trim();
+  await db.runAsync(`DELETE FROM tag_defs WHERE name = ?;`, n);
+
+  // keep entries consistent: remove this tag from every entry.tags_json (no JSON1 dependency)
+  const entries = await db.getAllAsync(`SELECT date, tags_json FROM entries;`);
+  for (const e of entries) {
+    let tags = [];
+    try { tags = JSON.parse(e.tags_json ?? "[]"); } catch {}
+    if (!Array.isArray(tags)) continue;
+    const next = tags.filter(t => typeof t === "string" && t.trim().toLowerCase() !== n.toLowerCase());
+    if (next.length !== tags.length) {
+      await db.runAsync(`UPDATE entries SET tags_json = ? WHERE date = ?;`, JSON.stringify(next), e.date);
+    }
   }
 }
