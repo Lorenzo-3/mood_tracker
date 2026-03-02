@@ -2,60 +2,15 @@
 
 /**
  * Called by <SQLiteProvider onInit={...} />
+ * Fresh-install friendly: always ensures tables exist.
+ * (No fragile version-gating; safe to run on every launch.)
  */
+
 export async function migrateDbIfNeeded(db) {
   await db.execAsync(`
     PRAGMA foreign_keys = ON;
     PRAGMA journal_mode = WAL;
-  `);
 
-  const vRow = await db.getFirstAsync("PRAGMA user_version;");
-  const version = vRow?.user_version ?? vRow?.["user_version"] ?? 0;
-  if (version >= 1) return;
-
-  // scripts/db.js (add inside migrateDbIfNeeded)
-if (version < 2) {
-  await db.execAsync(`
-    CREATE TABLE IF NOT EXISTS tag_defs (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      name TEXT NOT NULL UNIQUE COLLATE NOCASE,
-      color TEXT NOT NULL,
-      created_at INTEGER NOT NULL
-    );
-  `);
-
-  // Optional: seed tag_defs from existing entries.tags_json (if you have old typed tags)
-  const rows = await db.getAllAsync(`SELECT tags_json FROM entries;`);
-  const palette = ["#D64545","#E07A3F","#D9B44A","#4BAA6A","#2F8F83","#4A6FE3","#B04AE3"];
-
-  const pickColor = (name) => {
-    let h = 0;
-    for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) >>> 0;
-    return palette[h % palette.length];
-  };
-
-  for (const r of rows) {
-    let arr = [];
-    try { arr = JSON.parse(r.tags_json ?? "[]"); } catch {}
-    if (!Array.isArray(arr)) continue;
-    for (const t of arr) {
-      if (typeof t !== "string") continue;
-      const name = t.trim();
-      if (!name) continue;
-      await db.runAsync(
-        `INSERT OR IGNORE INTO tag_defs (name, color, created_at) VALUES (?, ?, ?);`,
-        name,
-        pickColor(name),
-        Date.now()
-      );
-    }
-  }
-
-  await db.execAsync("PRAGMA user_version = 2;");
-}
-
-
-  await db.execAsync(`
     CREATE TABLE IF NOT EXISTS entries (
       date TEXT PRIMARY KEY NOT NULL,          -- YYYY-MM-DD
       mood INTEGER NOT NULL,                   -- 1..5
@@ -68,16 +23,23 @@ if (version < 2) {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       entry_date TEXT NOT NULL,
       uri TEXT NOT NULL,
-      media_type TEXT NOT NULL,                -- 'image' | 'video' (store whatever picker returns)
+      media_type TEXT NOT NULL,                -- 'image' | 'video'
       created_at INTEGER NOT NULL,
       FOREIGN KEY(entry_date) REFERENCES entries(date) ON DELETE CASCADE
     );
 
     CREATE INDEX IF NOT EXISTS idx_attachments_entry_date
       ON attachments(entry_date);
-  `);
 
-  await db.execAsync("PRAGMA user_version = 1;");
+    CREATE TABLE IF NOT EXISTS tag_defs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+      color TEXT NOT NULL,
+      created_at INTEGER NOT NULL
+    );
+
+    PRAGMA user_version = 2;
+  `);
 }
 
 export async function upsertEntry(db, { date, mood, tags = [], note = "" }) {
@@ -165,23 +127,10 @@ export async function deleteAttachment(db, id) {
   await db.runAsync(`DELETE FROM attachments WHERE id = ?;`, id);
 }
 
-function safeJsonParse(text, fallback) {
-  try {
-    return JSON.parse(text);
-  } catch {
-    return fallback;
-  }
-}
-
-export async function getAllTagDefs(db) {
-  return await db.getAllAsync(
-    `SELECT id, name, color FROM tag_defs ORDER BY name COLLATE NOCASE;`
-  );
-}
-
 export async function addTagDef(db, { name, color }) {
   const n = (name ?? "").trim();
   if (!n) throw new Error("Tag name is empty");
+
   await db.runAsync(
     `INSERT INTO tag_defs (name, color, created_at) VALUES (?, ?, ?);`,
     n,
@@ -190,19 +139,71 @@ export async function addTagDef(db, { name, color }) {
   );
 }
 
+export async function updateTagDefColor(db, { name, color }) {
+  const n = (name ?? "").trim();
+  if (!n) throw new Error("Tag name is empty");
+  await db.runAsync(`UPDATE tag_defs SET color = ? WHERE name = ?;`, color, n);
+}
+
+
 export async function deleteTagDef(db, name) {
   const n = (name ?? "").trim();
   await db.runAsync(`DELETE FROM tag_defs WHERE name = ?;`, n);
 
-  // keep entries consistent: remove this tag from every entry.tags_json (no JSON1 dependency)
+  // remove from entries.tags_json
   const entries = await db.getAllAsync(`SELECT date, tags_json FROM entries;`);
   for (const e of entries) {
     let tags = [];
-    try { tags = JSON.parse(e.tags_json ?? "[]"); } catch {}
+    try {
+      tags = JSON.parse(e.tags_json ?? "[]");
+    } catch {}
     if (!Array.isArray(tags)) continue;
-    const next = tags.filter(t => typeof t === "string" && t.trim().toLowerCase() !== n.toLowerCase());
+
+    const next = tags.filter(
+      t => typeof t === "string" && t.trim().toLowerCase() !== n.toLowerCase()
+    );
+
     if (next.length !== tags.length) {
-      await db.runAsync(`UPDATE entries SET tags_json = ? WHERE date = ?;`, JSON.stringify(next), e.date);
+      await db.runAsync(
+        `UPDATE entries SET tags_json = ?, updated_at = ? WHERE date = ?;`,
+        JSON.stringify(next),
+        Date.now(),
+        e.date
+      );
     }
   }
 }
+
+export async function getAllEntries(db) {
+  return await db.getAllAsync(
+    `SELECT date, mood, tags_json, note, updated_at
+     FROM entries
+     ORDER BY date ASC;`
+  );
+}
+
+export async function getAllAttachments(db) {
+  return await db.getAllAsync(
+    `SELECT id, entry_date, uri, media_type, created_at
+     FROM attachments
+     ORDER BY entry_date ASC, id ASC;`
+  );
+}
+
+export async function getAllTagDefs(db) {
+  return await db.getAllAsync(
+    `SELECT id, name, color, created_at
+     FROM tag_defs
+     ORDER BY name COLLATE NOCASE;`
+  );
+}
+
+function safeJsonParse(text, fallback) {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return fallback;
+  }
+}
+
+

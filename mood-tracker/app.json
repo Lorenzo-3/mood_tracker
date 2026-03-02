@@ -4,7 +4,8 @@
     "slug": "mood-tracker",
     "android": {
       "package": "com.yourname.moodtracker",
-      "versionCode": 1
+      "versionCode": 1,
+      "userInterfaceStyle": "automatic"
     },
     "extra": {
       "eas": {
